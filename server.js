@@ -1,9 +1,16 @@
 const express = require("express");
 const bodyParser = require("body-parser");
 const fs = require("fs");
+const cors = require("cors"); // ✅ import cors
 require("dotenv").config();
 
 const app = express();
+
+// ✅ Enable CORS for all origins (or restrict to your frontend only)
+app.use(cors({
+  origin: "http://localhost:5173", // Change this to your production frontend URL later
+}));
+
 app.use(bodyParser.json());
 
 const paymentsFile = "./payments.json";
@@ -69,7 +76,29 @@ app.get("/api/has-paid", (req, res) => {
   }
 });
 
-// Start server
+// ✅ (OPTIONAL) New Endpoint to Receive Book Requests
+app.post("/api/book-request", (req, res) => {
+  try {
+    const request = req.body;
+
+    // Save to a local file or database (you can expand this later)
+    const requestsFile = "./bookRequests.json";
+    let existing = [];
+
+    if (fs.existsSync(requestsFile)) {
+      existing = JSON.parse(fs.readFileSync(requestsFile));
+    }
+
+    existing.push(request);
+    fs.writeFileSync(requestsFile, JSON.stringify(existing, null, 2));
+
+    res.status(201).json({ message: "Request saved successfully." });
+  } catch (err) {
+    console.error("❌ Failed to save book request:", err.message);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
