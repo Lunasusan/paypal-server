@@ -1,22 +1,20 @@
 const express = require("express");
 const bodyParser = require("body-parser");
 const fs = require("fs");
-const cors = require("cors"); // ✅ import cors
+const cors = require("cors");
 require("dotenv").config();
 
 const app = express();
 
-// ✅ Enable CORS for all origins (or restrict to your frontend only)
-app.use(cors({
-  origin: "http://localhost:5173", // Change this to your production frontend URL later
-}));
+// ✅ Allow all origins temporarily for testing
+app.use(cors());
 
 app.use(bodyParser.json());
 
 const paymentsFile = "./payments.json";
 let paidUsers = [];
 
-// Load previous payments safely
+// Load previous payments
 try {
   if (fs.existsSync(paymentsFile)) {
     const data = fs.readFileSync(paymentsFile);
@@ -27,7 +25,7 @@ try {
   paidUsers = [];
 }
 
-// Webhook endpoint for PayPal
+// ✅ Webhook endpoint for PayPal
 app.post("/paypal/webhook", (req, res) => {
   try {
     const event = req.body;
@@ -56,7 +54,7 @@ app.post("/paypal/webhook", (req, res) => {
   }
 });
 
-// Endpoint: Check if user has paid for a book
+// ✅ Check if user has paid
 app.get("/api/has-paid", (req, res) => {
   try {
     const { email, bookId } = req.query;
@@ -76,12 +74,11 @@ app.get("/api/has-paid", (req, res) => {
   }
 });
 
-// ✅ (OPTIONAL) New Endpoint to Receive Book Requests
+// ✅ Save a new book request
 app.post("/api/book-request", (req, res) => {
   try {
     const request = req.body;
 
-    // Save to a local file or database (you can expand this later)
     const requestsFile = "./bookRequests.json";
     let existing = [];
 
@@ -95,6 +92,23 @@ app.post("/api/book-request", (req, res) => {
     res.status(201).json({ message: "Request saved successfully." });
   } catch (err) {
     console.error("❌ Failed to save book request:", err.message);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// ✅ GET all book requests
+app.get("/api/book-requests", (req, res) => {
+  try {
+    const requestsFile = "./bookRequests.json";
+    let data = [];
+
+    if (fs.existsSync(requestsFile)) {
+      data = JSON.parse(fs.readFileSync(requestsFile));
+    }
+
+    res.json(data);
+  } catch (err) {
+    console.error("❌ Failed to load book requests:", err.message);
     res.status(500).json({ error: "Server error" });
   }
 });
