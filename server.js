@@ -6,15 +6,18 @@ require("dotenv").config();
 
 const app = express();
 
-// ✅ Allow all origins temporarily for testing
-app.use(cors());
+// ✅ Allow only your deployed frontend to talk to backend
+app.use(cors({
+  origin: "https://medical-ebooks.netlify.app",
+}));
 
 app.use(bodyParser.json());
 
 const paymentsFile = "./payments.json";
+const fulfilledFile = "./fulfilledRequests.json";
 let paidUsers = [];
 
-// Load previous payments
+// ✅ Load previously paid records from file
 try {
   if (fs.existsSync(paymentsFile)) {
     const data = fs.readFileSync(paymentsFile);
@@ -25,14 +28,16 @@ try {
   paidUsers = [];
 }
 
-// ✅ Webhook endpoint for PayPal
+// ✅ Webhook endpoint for PayPal payments
 app.post("/paypal/webhook", (req, res) => {
   try {
     const event = req.body;
 
     if (event.event_type === "CHECKOUT.ORDER.APPROVED") {
       const payerEmail = event?.resource?.payer?.email_address;
-      const bookId = event?.resource?.purchase_units?.[0]?.reference_id;
+      const bookId =
+        event?.resource?.invoice_id ||
+        event?.resource?.purchase_units?.[0]?.reference_id;
 
       if (!payerEmail || !bookId) {
         console.warn("⚠️ Missing payerEmail or bookId");
@@ -42,19 +47,19 @@ app.post("/paypal/webhook", (req, res) => {
       paidUsers.push({ email: payerEmail, bookId });
       fs.writeFileSync(paymentsFile, JSON.stringify(paidUsers, null, 2));
 
-      console.log("✅ Payment recorded for:", payerEmail, "Book:", bookId);
+      console.log("✅ Payment recorded:", payerEmail, "Book:", bookId);
       return res.sendStatus(200);
     }
 
-    console.warn("⚠️ Unsupported event type:", event.event_type);
+    console.warn("⚠️ Unrecognized event type:", event.event_type);
     res.sendStatus(400);
   } catch (err) {
-    console.error("❌ Error handling webhook:", err.message);
+    console.error("❌ Webhook error:", err.message);
     res.sendStatus(500);
   }
 });
 
-// ✅ Check if user has paid
+// ✅ Check if a user has paid for a book
 app.get("/api/has-paid", (req, res) => {
   try {
     const { email, bookId } = req.query;
@@ -69,16 +74,15 @@ app.get("/api/has-paid", (req, res) => {
 
     res.json({ paid: found });
   } catch (err) {
-    console.error("❌ Error checking payment status:", err.message);
+    console.error("❌ has-paid error:", err.message);
     res.status(500).json({ error: "Server error" });
   }
 });
 
-// ✅ Save a new book request
+// ✅ Save book requests
 app.post("/api/book-request", (req, res) => {
   try {
     const request = req.body;
-
     const requestsFile = "./bookRequests.json";
     let existing = [];
 
@@ -91,28 +95,65 @@ app.post("/api/book-request", (req, res) => {
 
     res.status(201).json({ message: "Request saved successfully." });
   } catch (err) {
-    console.error("❌ Failed to save book request:", err.message);
+    console.error("❌ book-request error:", err.message);
     res.status(500).json({ error: "Server error" });
   }
 });
 
-// ✅ GET all book requests
+// ✅ Get all book requests
 app.get("/api/book-requests", (req, res) => {
   try {
     const requestsFile = "./bookRequests.json";
-    let data = [];
-
-    if (fs.existsSync(requestsFile)) {
-      data = JSON.parse(fs.readFileSync(requestsFile));
-    }
+    const data = fs.existsSync(requestsFile)
+      ? JSON.parse(fs.readFileSync(requestsFile))
+      : [];
 
     res.json(data);
   } catch (err) {
-    console.error("❌ Failed to load book requests:", err.message);
+    console.error("❌ get book-requests error:", err.message);
     res.status(500).json({ error: "Server error" });
   }
 });
 
+// ✅ Get all fulfilled requests
+app.get("/api/fulfilled-requests", (req, res) => {
+  const data = fs.existsSync(fulfilledFile)
+    ? JSON.parse(fs.readFileSync(fulfilledFile))
+    : [];
+
+  res.json(data);
+});
+
+// ✅ Mark a request as fulfilled (by admin)
+app.put("/fulfill-request", (req, res) => {
+  const { email, bookId } = req.body;
+
+  if (!email || !bookId) {
+    return res.status(400).json({ error: "Missing email or bookId" });
+  }
+
+  const existing = fs.existsSync(fulfilledFile)
+    ? JSON.parse(fs.readFileSync(fulfilledFile))
+    : [];
+
+  const alreadyMarked = existing.some(
+    (r) => r.email === email && r.bookId === bookId
+  );
+
+  if (!alreadyMarked) {
+    existing.push({ email, bookId });
+    fs.writeFileSync(fulfilledFile, JSON.stringify(existing, null, 2));
+  }
+
+  res.json({ message: "Marked as fulfilled" });
+});
+
+// ✅ Admin: View all paid users
+app.get("/paid-requests", (req, res) => {
+  res.json(paidUsers);
+});
+
+// ✅ Start server
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
