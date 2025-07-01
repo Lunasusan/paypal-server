@@ -6,8 +6,22 @@ require("dotenv").config();
 
 const app = express();
 
+// ✅ Allow multiple origins (Netlify + localhost for dev)
+const allowedOrigins = [
+  "https://medical-ebooks.netlify.app",
+  "https://medicalbooks.netlify.app",
+  "http://localhost:5173",
+];
+
 app.use(cors({
-  origin: "https://medical-ebooks.netlify.app",
+  origin: function (origin, callback) {
+    if (!origin) return callback(null, true); // allow server-side or Postman
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    } else {
+      return callback(new Error("CORS error: Not allowed by CORS"));
+    }
+  }
 }));
 
 app.use(bodyParser.json());
