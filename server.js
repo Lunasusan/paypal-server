@@ -6,9 +6,9 @@ require("dotenv").config();
 
 const app = express();
 
-// ✅ Allow only medicalbooks.netlify.app and localhost
+// ✅ Allow only medical-textbooks.netlify.app and localhost
 const allowedOrigins = [
-  "https://medicalbooks.netlify.app",
+  "https://medical-textbooks.netlify.app", // ✅ Only this Netlify domain
   "http://localhost:5173",
 ];
 
@@ -31,21 +31,21 @@ app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
 app.use(bodyParser.json());
 
-// ✅ Root route to confirm server is live
+// ✅ Root route
 app.get("/", (req, res) => {
   res.send("📚 Medical Ebooks API is live.");
 });
 
-// ✅ File paths for persistence
+// ✅ File paths
 const paymentsFile = "./payments.json";
 const fulfilledFile = "./fulfilledRequests.json";
 const requestsFile = "./bookRequests.json";
 
-// ✅ In-memory variables
+// ✅ In-memory storage
 let paidUsers = [];
 let bookRequests = [];
 
-// ✅ Load previous payments
+// ✅ Load existing payments
 try {
   if (fs.existsSync(paymentsFile)) {
     const data = fs.readFileSync(paymentsFile);
@@ -56,7 +56,7 @@ try {
   paidUsers = [];
 }
 
-// ✅ Load previous book requests
+// ✅ Load existing book requests
 try {
   if (fs.existsSync(requestsFile)) {
     const data = fs.readFileSync(requestsFile);
@@ -67,7 +67,7 @@ try {
   bookRequests = [];
 }
 
-// ✅ PayPal webhook endpoint
+// ✅ PayPal webhook
 app.post("/paypal/webhook", (req, res) => {
   try {
     const event = req.body;
@@ -91,7 +91,7 @@ app.post("/paypal/webhook", (req, res) => {
   }
 });
 
-// ✅ Check if user has paid for a book
+// ✅ Check payment status
 app.get("/api/has-paid", (req, res) => {
   try {
     const { email, bookId } = req.query;
@@ -113,7 +113,7 @@ app.post("/api/book-request", (req, res) => {
   try {
     const request = req.body;
     bookRequests.push(request);
-    fs.writeFileSync(requestsFile, JSON.stringify(bookRequests, null, 2)); // ✅ Persist
+    fs.writeFileSync(requestsFile, JSON.stringify(bookRequests, null, 2));
     console.log("📥 Book Requested:", request);
     res.status(201).json({ message: "Request saved successfully." });
   } catch (err) {
@@ -137,7 +137,7 @@ app.get("/paid-requests", (req, res) => {
   res.json(paidUsers);
 });
 
-// ✅ Mark a book request as fulfilled
+// ✅ Mark request as fulfilled
 app.post("/api/fulfill-request", (req, res) => {
   const { email, title, author, edition, notes, downloadUrl, price, paid } =
     req.body;
@@ -158,13 +158,23 @@ app.post("/api/fulfill-request", (req, res) => {
   res.json({ message: "Marked as fulfilled" });
 });
 
-// ✅ Get all fulfilled book requests
+// ✅ Get fulfilled book requests
 app.get("/api/fulfilled-requests", (req, res) => {
   const data = fs.existsSync(fulfilledFile)
     ? JSON.parse(fs.readFileSync(fulfilledFile))
     : [];
 
   res.json(data);
+});
+
+// ✅ Global error handler (CORS and others)
+app.use((err, req, res, next) => {
+  console.error("❌ Global error handler:", err.message);
+  if (err.message.includes("CORS")) {
+    res.status(403).send("Blocked by CORS");
+  } else {
+    res.status(500).send("Server Error: " + err.message);
+  }
 });
 
 // ✅ Start the server
