@@ -6,10 +6,10 @@ require("dotenv").config();
 
 const app = express();
 
-// ✅ Allow only medical-textbooks.netlify.app and localhost
+// ✅ Allow localhost and Netlify for dev/prod
 const allowedOrigins = [
-  "https://medical-textbooks.netlify.app", // ✅ Only this Netlify domain
   "http://localhost:5173",
+  "https://medical-textbooks.netlify.app",
 ];
 
 const corsOptions = {
@@ -27,11 +27,12 @@ const corsOptions = {
   optionsSuccessStatus: 200,
 };
 
+// ✅ Apply CORS
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
 app.use(bodyParser.json());
 
-// ✅ Root route
+// ✅ Root test route
 app.get("/", (req, res) => {
   res.send("📚 Medical Ebooks API is live.");
 });
@@ -41,7 +42,7 @@ const paymentsFile = "./payments.json";
 const fulfilledFile = "./fulfilledRequests.json";
 const requestsFile = "./bookRequests.json";
 
-// ✅ In-memory storage
+// ✅ In-memory data
 let paidUsers = [];
 let bookRequests = [];
 
@@ -67,7 +68,7 @@ try {
   bookRequests = [];
 }
 
-// ✅ PayPal webhook
+// ✅ PayPal webhook listener
 app.post("/paypal/webhook", (req, res) => {
   try {
     const event = req.body;
@@ -91,7 +92,7 @@ app.post("/paypal/webhook", (req, res) => {
   }
 });
 
-// ✅ Check payment status
+// ✅ Check if user has paid
 app.get("/api/has-paid", (req, res) => {
   try {
     const { email, bookId } = req.query;
@@ -108,7 +109,7 @@ app.get("/api/has-paid", (req, res) => {
   }
 });
 
-// ✅ Submit a book request
+// ✅ Submit book request
 app.post("/api/book-request", (req, res) => {
   try {
     const request = req.body;
@@ -132,42 +133,67 @@ app.get("/api/book-requests", (req, res) => {
   }
 });
 
-// ✅ Get all payment records
+// ✅ Get all paid users
 app.get("/paid-requests", (req, res) => {
-  res.json(paidUsers);
-});
-
-// ✅ Mark request as fulfilled
-app.post("/api/fulfill-request", (req, res) => {
-  const { email, title, author, edition, notes, downloadUrl, price, paid } =
-    req.body;
-
-  const existing = fs.existsSync(fulfilledFile)
-    ? JSON.parse(fs.readFileSync(fulfilledFile))
-    : [];
-
-  const alreadyMarked = existing.some(
-    (r) => r.email === email && r.title === title
-  );
-
-  if (!alreadyMarked) {
-    existing.push({ email, title, author, edition, notes, downloadUrl, price, paid });
-    fs.writeFileSync(fulfilledFile, JSON.stringify(existing, null, 2));
+  try {
+    res.json(paidUsers);
+  } catch (err) {
+    console.error("❌ Failed to fetch paid requests:", err.message);
+    res.status(500).json({ error: "Server error" });
   }
-
-  res.json({ message: "Marked as fulfilled" });
 });
 
-// ✅ Get fulfilled book requests
+// ✅ Mark a request as fulfilled
+app.post("/api/fulfill-request", (req, res) => {
+  try {
+    const { email, title, author, edition, notes, downloadUrl, price, paid } =
+      req.body;
+
+    const existing = fs.existsSync(fulfilledFile)
+      ? JSON.parse(fs.readFileSync(fulfilledFile))
+      : [];
+
+    const alreadyMarked = existing.some(
+      (r) => r.email === email && r.title === title
+    );
+
+    if (!alreadyMarked) {
+      existing.push({
+        email,
+        title,
+        author,
+        edition,
+        notes,
+        downloadUrl,
+        price,
+        paid,
+      });
+      fs.writeFileSync(fulfilledFile, JSON.stringify(existing, null, 2));
+      console.log("✅ Fulfilled request for:", email, title);
+    }
+
+    res.json({ message: "Marked as fulfilled" });
+  } catch (err) {
+    console.error("❌ Error fulfilling request:", err.message);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// ✅ Get all fulfilled requests
 app.get("/api/fulfilled-requests", (req, res) => {
-  const data = fs.existsSync(fulfilledFile)
-    ? JSON.parse(fs.readFileSync(fulfilledFile))
-    : [];
+  try {
+    const data = fs.existsSync(fulfilledFile)
+      ? JSON.parse(fs.readFileSync(fulfilledFile))
+      : [];
 
-  res.json(data);
+    res.json(data);
+  } catch (err) {
+    console.error("❌ Error fetching fulfilled requests:", err.message);
+    res.status(500).json({ error: "Server error" });
+  }
 });
 
-// ✅ Global error handler (CORS and others)
+// ✅ Global error handler (CORS & others)
 app.use((err, req, res, next) => {
   console.error("❌ Global error handler:", err.message);
   if (err.message.includes("CORS")) {
@@ -177,7 +203,7 @@ app.use((err, req, res, next) => {
   }
 });
 
-// ✅ Start the server
+// ✅ Start server
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
