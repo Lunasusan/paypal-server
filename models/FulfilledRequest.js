@@ -1,18 +1,17 @@
 const mongoose = require("mongoose");
 
-const fulfilledRequestSchema = new mongoose.Schema({
-  email: String,
-  title: String,
-  author: String,
-  edition: String,
-  notes: String,
-  downloadUrl: String,
-  price: String,
-  paid: Boolean,
-  fulfilledAt: {
-    type: Date,
-    default: Date.now,
+const FulfilledRequestSchema = new mongoose.Schema(
+  {
+    email: { type: String, required: true },
+    title: { type: String, required: true },
+    author: { type: String },
+    edition: { type: String, default: "N/A" },
+    notes: { type: String, default: "" },
+    downloadUrl: { type: String, required: true },
+    price: { type: Number, required: true },
+    paid: { type: Boolean, default: false },
   },
-});
+  { timestamps: true }
+);
 
-module.exports = mongoose.model("FulfilledRequest", fulfilledRequestSchema);
+module.exports = mongoose.model("FulfilledRequest", FulfilledRequestSchema);
