@@ -1,12 +1,16 @@
 const express = require("express");
 const bodyParser = require("body-parser");
-const fs = require("fs");
 const cors = require("cors");
+const mongoose = require("mongoose");
 require("dotenv").config();
+
+const BookRequest = require("./models/BookRequest");
+const FulfilledRequest = require("./models/FulfilledRequest");
+const Payment = require("./models/Payment");
 
 const app = express();
 
-// ✅ Allow localhost and Netlify for dev/prod
+// ✅ CORS setup
 const allowedOrigins = [
   "http://localhost:5173",
   "https://medical-textbooks.netlify.app",
@@ -27,49 +31,26 @@ const corsOptions = {
   optionsSuccessStatus: 200,
 };
 
-// ✅ Apply CORS
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
 app.use(bodyParser.json());
 
-// ✅ Root test route
+// ✅ MongoDB connection
+mongoose
+  .connect(process.env.MONGO_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true,
+  })
+  .then(() => console.log("✅ Connected to MongoDB Atlas"))
+  .catch((err) => console.error("❌ MongoDB connection error:", err.message));
+
+// ✅ Root route
 app.get("/", (req, res) => {
   res.send("📚 Medical Ebooks API is live.");
 });
 
-// ✅ File paths
-const paymentsFile = "./payments.json";
-const fulfilledFile = "./fulfilledRequests.json";
-const requestsFile = "./bookRequests.json";
-
-// ✅ In-memory data
-let paidUsers = [];
-let bookRequests = [];
-
-// ✅ Load existing payments
-try {
-  if (fs.existsSync(paymentsFile)) {
-    const data = fs.readFileSync(paymentsFile);
-    paidUsers = JSON.parse(data || "[]");
-  }
-} catch (err) {
-  console.error("❌ Failed to read payments file:", err.message);
-  paidUsers = [];
-}
-
-// ✅ Load existing book requests
-try {
-  if (fs.existsSync(requestsFile)) {
-    const data = fs.readFileSync(requestsFile);
-    bookRequests = JSON.parse(data || "[]");
-  }
-} catch (err) {
-  console.error("❌ Failed to read book requests:", err.message);
-  bookRequests = [];
-}
-
-// ✅ PayPal webhook listener
-app.post("/paypal/webhook", (req, res) => {
+// ✅ PayPal Webhook - save to MongoDB
+app.post("/paypal/webhook", async (req, res) => {
   try {
     const event = req.body;
     if (event.event_type === "CHECKOUT.ORDER.APPROVED") {
@@ -78,10 +59,10 @@ app.post("/paypal/webhook", (req, res) => {
 
       if (!payerEmail || !bookId) return res.sendStatus(400);
 
-      paidUsers.push({ email: payerEmail, bookId });
-      fs.writeFileSync(paymentsFile, JSON.stringify(paidUsers, null, 2));
+      const payment = new Payment({ email: payerEmail, bookId });
+      await payment.save();
 
-      console.log("✅ Payment recorded for:", payerEmail, "Book:", bookId);
+      console.log("✅ Payment saved to MongoDB:", payerEmail, bookId);
       return res.sendStatus(200);
     }
 
@@ -92,30 +73,27 @@ app.post("/paypal/webhook", (req, res) => {
   }
 });
 
-// ✅ Check if user has paid
-app.get("/api/has-paid", (req, res) => {
+// ✅ Check if user has paid (MongoDB)
+app.get("/api/has-paid", async (req, res) => {
   try {
     const { email, bookId } = req.query;
     if (!email || !bookId)
       return res.status(400).json({ error: "Missing email or bookId" });
 
-    const found = paidUsers.some(
-      (p) => p.email === email && p.bookId === bookId
-    );
-    res.json({ paid: found });
+    const found = await Payment.findOne({ email, bookId });
+    res.json({ paid: !!found });
   } catch (err) {
     console.error("❌ Error checking payment status:", err.message);
     res.status(500).json({ error: "Server error" });
   }
 });
 
-// ✅ Submit book request
-app.post("/api/book-request", (req, res) => {
+// ✅ Book Requests (MongoDB)
+app.post("/api/book-request", async (req, res) => {
   try {
-    const request = req.body;
-    bookRequests.push(request);
-    fs.writeFileSync(requestsFile, JSON.stringify(bookRequests, null, 2));
-    console.log("📥 Book Requested:", request);
+    const request = new BookRequest(req.body);
+    await request.save();
+    console.log("📥 Book Requested (MongoDB):", request);
     res.status(201).json({ message: "Request saved successfully." });
   } catch (err) {
     console.error("❌ book-request error:", err.message);
@@ -123,42 +101,34 @@ app.post("/api/book-request", (req, res) => {
   }
 });
 
-// ✅ Get all book requests
-app.get("/api/book-requests", (req, res) => {
+app.get("/api/book-requests", async (req, res) => {
   try {
-    res.json(bookRequests);
+    const requests = await BookRequest.find().sort({ timestamp: -1 });
+    res.json(requests);
   } catch (err) {
     console.error("❌ Failed to return book requests:", err.message);
     res.status(500).json({ error: "Server error" });
   }
 });
 
-// ✅ Get all paid users
-app.get("/paid-requests", (req, res) => {
+// ✅ Fulfilled Requests (MongoDB)
+app.post("/api/fulfill-request", async (req, res) => {
   try {
-    res.json(paidUsers);
-  } catch (err) {
-    console.error("❌ Failed to fetch paid requests:", err.message);
-    res.status(500).json({ error: "Server error" });
-  }
-});
+    const {
+      email,
+      title,
+      author,
+      edition,
+      notes,
+      downloadUrl,
+      price,
+      paid,
+    } = req.body;
 
-// ✅ Mark a request as fulfilled
-app.post("/api/fulfill-request", (req, res) => {
-  try {
-    const { email, title, author, edition, notes, downloadUrl, price, paid } =
-      req.body;
+    const alreadyExists = await FulfilledRequest.findOne({ email, title });
 
-    const existing = fs.existsSync(fulfilledFile)
-      ? JSON.parse(fs.readFileSync(fulfilledFile))
-      : [];
-
-    const alreadyMarked = existing.some(
-      (r) => r.email === email && r.title === title
-    );
-
-    if (!alreadyMarked) {
-      existing.push({
+    if (!alreadyExists) {
+      const newRequest = new FulfilledRequest({
         email,
         title,
         author,
@@ -168,32 +138,40 @@ app.post("/api/fulfill-request", (req, res) => {
         price,
         paid,
       });
-      fs.writeFileSync(fulfilledFile, JSON.stringify(existing, null, 2));
-      console.log("✅ Fulfilled request for:", email, title);
+
+      await newRequest.save();
+      console.log("✅ Fulfilled request saved to MongoDB:", email, title);
     }
 
-    res.json({ message: "Marked as fulfilled" });
+    res.json({ message: "Marked as fulfilled." });
   } catch (err) {
-    console.error("❌ Error fulfilling request:", err.message);
+    console.error("❌ Error saving fulfilled request:", err.message);
     res.status(500).json({ error: "Server error" });
   }
 });
 
-// ✅ Get all fulfilled requests
-app.get("/api/fulfilled-requests", (req, res) => {
+app.get("/api/fulfilled-requests", async (req, res) => {
   try {
-    const data = fs.existsSync(fulfilledFile)
-      ? JSON.parse(fs.readFileSync(fulfilledFile))
-      : [];
-
-    res.json(data);
+    const fulfilled = await FulfilledRequest.find().sort({ fulfilledAt: -1 });
+    res.json(fulfilled);
   } catch (err) {
     console.error("❌ Error fetching fulfilled requests:", err.message);
     res.status(500).json({ error: "Server error" });
   }
 });
 
-// ✅ Global error handler (CORS & others)
+// ✅ Admin route: Get all payments
+app.get("/paid-requests", async (req, res) => {
+  try {
+    const payments = await Payment.find().sort({ paidAt: -1 });
+    res.json(payments);
+  } catch (err) {
+    console.error("❌ Failed to fetch paid requests:", err.message);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// ✅ Global error handler
 app.use((err, req, res, next) => {
   console.error("❌ Global error handler:", err.message);
   if (err.message.includes("CORS")) {
