@@ -2,6 +2,7 @@ const express = require("express");
 const bodyParser = require("body-parser");
 const cors = require("cors");
 const mongoose = require("mongoose");
+const axios = require("axios");
 require("dotenv").config();
 
 const BookRequest = require("./models/BookRequest");
@@ -45,6 +46,17 @@ mongoose
 // ✅ Root route
 app.get("/", (req, res) => {
   res.send("📚 Medical Ebooks API is live.");
+});
+
+// ✅ New route to get server outbound IP
+app.get("/api/my-ip", async (req, res) => {
+  try {
+    const response = await axios.get("https://api.ipify.org?format=json");
+    res.json({ ip: response.data.ip });
+  } catch (error) {
+    console.error("❌ Failed to fetch IP:", error.message);
+    res.status(500).json({ error: "Failed to fetch IP" });
+  }
 });
 
 // ✅ Save new user to MongoDB
