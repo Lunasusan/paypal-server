@@ -284,3 +284,53 @@ const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
+// ✅ Admin route - merged payment + book info
+app.get("/api/admin/paid-details", async (req, res) => {
+  try {
+    const payments = await Payment.find({ status: "paid" });
+    const bookIds = payments.map((p) => p.bookId);
+
+    const fulfilledBooks = await FulfilledRequest.find({
+      _id: { $in: bookIds },
+    });
+
+    const merged = payments.map((p) => {
+      const book = fulfilledBooks.find((b) => b._id.toString() === p.bookId);
+      return {
+        _id: p._id,
+        email: p.email,
+        bookId: p.bookId,
+        paidAt: p.paidAt,
+        title: book?.title || "Unknown",
+        price: book?.price || "N/A",
+        fulfilled: book?.paid || false,
+      };
+    });
+
+    res.json(merged);
+  } catch (err) {
+    console.error("❌ Failed to merge paid data:", err.message);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// ✅ Mark payment as fulfilled (sets 'paid' = true on FulfilledRequest)
+app.post("/api/fulfill-payment", async (req, res) => {
+  try {
+    const { paymentId, bookId } = req.body;
+    if (!paymentId || !bookId) {
+      return res.status(400).json({ error: "Missing paymentId or bookId" });
+    }
+
+    await FulfilledRequest.updateOne(
+      { _id: bookId },
+      { $set: { paid: true } }
+    );
+
+    console.log("✅ Marked book as fulfilled:", bookId);
+    res.json({ message: "Fulfilled successfully." });
+  } catch (err) {
+    console.error("❌ Fulfill error:", err.message);
+    res.status(500).json({ error: "Server error" });
+  }
+});
