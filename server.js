@@ -80,41 +80,47 @@ app.post("/api/users", async (req, res) => {
   }
 });
 
-// ✅ Save PayPal payment to DB
+// ✅ Save PayPal payment to DB (Updated to use PAYMENT.CAPTURE.COMPLETED)
 app.post("/paypal/webhook", async (req, res) => {
   try {
     const event = req.body;
+    console.log("📩 PayPal webhook received:", event.event_type);
 
-    if (event.event_type === "CHECKOUT.ORDER.APPROVED") {
+    if (event.event_type === "PAYMENT.CAPTURE.COMPLETED") {
       const payerEmail = event?.resource?.payer?.email_address;
-      const bookId = event?.resource?.purchase_units?.[0]?.reference_id;
+      const orderId = event?.resource?.supplementary_data?.related_ids?.order_id;
 
-      if (!payerEmail || !bookId) {
-        console.warn("❌ Missing email or bookId in webhook");
+      if (!payerEmail || !orderId) {
+        console.warn("❌ Missing payerEmail or orderId in webhook");
         return res.sendStatus(400);
       }
 
-      const existingPayment = await Payment.findOne({ email: payerEmail, bookId });
+      const existingPayment = await Payment.findOne({
+        email: payerEmail.toLowerCase(),
+        bookId: orderId,
+      });
+
       if (existingPayment) {
-        console.log("ℹ️ Payment already recorded:", payerEmail, bookId);
+        console.log("ℹ️ Payment already exists:", payerEmail, orderId);
         return res.sendStatus(200);
       }
 
-      const payment = new Payment({
-        email: payerEmail,
-        bookId, // should match FulfilledRequest._id
+      await Payment.create({
+        email: payerEmail.toLowerCase(),
+        bookId: orderId,
         paidAt: new Date(),
         status: "paid",
       });
 
-      await payment.save();
-      console.log("✅ Payment saved:", payerEmail, bookId);
+      console.log("✅ Payment saved:", payerEmail, orderId);
       return res.sendStatus(200);
     }
 
-    res.sendStatus(400);
+    // Optional: Log ignored events
+    console.log("ℹ️ Ignored webhook event:", event.event_type);
+    res.sendStatus(200);
   } catch (err) {
-    console.error("❌ Error handling webhook:", err.message);
+    console.error("❌ Error in PayPal webhook:", err.message);
     res.sendStatus(500);
   }
 });
@@ -125,7 +131,7 @@ app.get("/api/has-paid", async (req, res) => {
     const { email, bookId } = req.query;
     if (!email || !bookId) return res.status(400).json({ error: "Missing fields" });
 
-    const found = await Payment.findOne({ email, bookId, status: "paid" });
+    const found = await Payment.findOne({ email: email.toLowerCase(), bookId, status: "paid" });
     res.json({ paid: !!found });
   } catch (err) {
     console.error("❌ Error checking payment:", err.message);
@@ -139,7 +145,7 @@ app.get("/api/paid-requests", async (req, res) => {
     const { email } = req.query;
     if (!email) return res.status(400).json({ error: "Missing email" });
 
-    const payments = await Payment.find({ email, status: "paid" });
+    const payments = await Payment.find({ email: email.toLowerCase(), status: "paid" });
     res.json(payments);
   } catch (err) {
     console.error("❌ Failed to fetch paid books:", err.message);
@@ -226,6 +232,39 @@ app.get("/api/payments", async (req, res) => {
     res.json(payments);
   } catch (err) {
     console.error("❌ Failed to fetch payments:", err.message);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// ✅ Secure Download Route
+app.get("/api/download/:bookId", async (req, res) => {
+  try {
+    const { bookId } = req.params;
+    const { email } = req.query;
+
+    if (!email || !bookId) {
+      return res.status(400).json({ error: "Missing email or bookId" });
+    }
+
+    // Check if the user paid for this book
+    const payment = await Payment.findOne({ email: email.toLowerCase(), bookId, status: "paid" });
+
+    // OR if they uploaded it themselves
+    const uploaded = await FulfilledRequest.findOne({ _id: bookId, email });
+
+    if (!payment && !uploaded) {
+      return res.status(403).json({ error: "Access denied. No valid payment or ownership." });
+    }
+
+    const book = await FulfilledRequest.findById(bookId);
+    if (!book || !book.downloadUrl) {
+      return res.status(404).json({ error: "Download not available" });
+    }
+
+    // ✅ Redirect to actual download URL (e.g. Cloud storage)
+    return res.redirect(book.downloadUrl);
+  } catch (err) {
+    console.error("❌ Error in secure download route:", err.message);
     res.status(500).json({ error: "Server error" });
   }
 });
