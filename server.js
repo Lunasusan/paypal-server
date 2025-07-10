@@ -3,6 +3,8 @@ const bodyParser = require("body-parser");
 const cors = require("cors");
 const mongoose = require("mongoose");
 const axios = require("axios");
+const multer = require("multer");
+const path = require("path");
 require("dotenv").config();
 
 const BookRequest = require("./models/BookRequest");
@@ -12,7 +14,6 @@ const User = require("./models/User");
 
 const app = express();
 
-// ✅ CORS setup
 const allowedOrigins = [
   "http://localhost:5173",
   "https://medical-textbooks.netlify.app",
@@ -37,18 +38,30 @@ app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
 app.use(bodyParser.json());
 
-// ✅ MongoDB connection
+// Serve static uploads folder
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+
+// Multer setup for file uploads
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, "uploads/");
+  },
+  filename: function (req, file, cb) {
+    const uniqueSuffix = Date.now() + path.extname(file.originalname);
+    cb(null, file.fieldname + "-" + uniqueSuffix);
+  },
+});
+const upload = multer({ storage });
+
 mongoose
   .connect(process.env.MONGO_URI)
   .then(() => console.log("✅ Connected to MongoDB Atlas"))
   .catch((err) => console.error("❌ MongoDB connection error:", err.message));
 
-// ✅ Root route
 app.get("/", (req, res) => {
   res.send("📚 Medical Ebooks API is live.");
 });
 
-// ✅ IP check
 app.get("/api/my-ip", async (req, res) => {
   try {
     const response = await axios.get("https://api.ipify.org?format=json");
@@ -59,7 +72,6 @@ app.get("/api/my-ip", async (req, res) => {
   }
 });
 
-// ✅ Save new user to MongoDB
 app.post("/api/users", async (req, res) => {
   try {
     const { email, uid } = req.body;
@@ -80,7 +92,6 @@ app.post("/api/users", async (req, res) => {
   }
 });
 
-// ✅ Save PayPal payment to DB (Updated to use PAYMENT.CAPTURE.COMPLETED)
 app.post("/paypal/webhook", async (req, res) => {
   try {
     const event = req.body;
@@ -88,35 +99,34 @@ app.post("/paypal/webhook", async (req, res) => {
 
     if (event.event_type === "PAYMENT.CAPTURE.COMPLETED") {
       const payerEmail = event?.resource?.payer?.email_address;
-      const orderId = event?.resource?.supplementary_data?.related_ids?.order_id;
+      const referenceId = event?.resource?.invoice_id || event?.resource?.supplementary_data?.related_ids?.order_id;
 
-      if (!payerEmail || !orderId) {
-        console.warn("❌ Missing payerEmail or orderId in webhook");
+      if (!payerEmail || !referenceId) {
+        console.warn("❌ Missing payerEmail or referenceId in webhook");
         return res.sendStatus(400);
       }
 
       const existingPayment = await Payment.findOne({
         email: payerEmail.toLowerCase(),
-        bookId: orderId,
+        bookId: referenceId,
       });
 
       if (existingPayment) {
-        console.log("ℹ️ Payment already exists:", payerEmail, orderId);
+        console.log("ℹ️ Payment already exists:", payerEmail, referenceId);
         return res.sendStatus(200);
       }
 
       await Payment.create({
         email: payerEmail.toLowerCase(),
-        bookId: orderId,
+        bookId: referenceId,
         paidAt: new Date(),
         status: "paid",
       });
 
-      console.log("✅ Payment saved:", payerEmail, orderId);
+      console.log("✅ Payment saved:", payerEmail, referenceId);
       return res.sendStatus(200);
     }
 
-    // Optional: Log ignored events
     console.log("ℹ️ Ignored webhook event:", event.event_type);
     res.sendStatus(200);
   } catch (err) {
@@ -125,7 +135,6 @@ app.post("/paypal/webhook", async (req, res) => {
   }
 });
 
-// ✅ Check if user has paid for a book
 app.get("/api/has-paid", async (req, res) => {
   try {
     const { email, bookId } = req.query;
@@ -139,7 +148,6 @@ app.get("/api/has-paid", async (req, res) => {
   }
 });
 
-// ✅ Return all payments made by a user
 app.get("/api/paid-requests", async (req, res) => {
   try {
     const { email } = req.query;
@@ -153,10 +161,13 @@ app.get("/api/paid-requests", async (req, res) => {
   }
 });
 
-// ✅ Book request
-app.post("/api/book-request", async (req, res) => {
+// ✅ UPDATED: Accept book requests with image upload
+app.post("/api/book-request", upload.single("image"), async (req, res) => {
   try {
-    const request = new BookRequest(req.body);
+    const { title, author, edition, email, notes } = req.body;
+    const imagePath = req.file ? `/uploads/${req.file.filename}` : null;
+
+    const request = new BookRequest({ title, author, edition, email, notes, image: imagePath });
     await request.save();
     console.log("📥 Book Requested:", request);
     res.status(201).json({ message: "Request saved successfully." });
@@ -176,39 +187,19 @@ app.get("/api/book-requests", async (req, res) => {
   }
 });
 
-// ✅ Fulfilled book uploads
 app.post("/api/fulfill-request", async (req, res) => {
   try {
-    const {
-      email,
-      title,
-      author,
-      edition,
-      notes,
-      downloadUrl,
-      price,
-      paid,
-    } = req.body;
+    const { email, title, author, edition, notes, downloadUrl, price, paid } = req.body;
 
     const alreadyExists = await FulfilledRequest.findOne({ email, title });
-
-    if (!alreadyExists) {
-      const newRequest = new FulfilledRequest({
-        email,
-        title,
-        author,
-        edition,
-        notes,
-        downloadUrl,
-        price,
-        paid,
-      });
-
-      await newRequest.save();
-      console.log("✅ Fulfilled request saved:", email, title);
+    if (alreadyExists) {
+      return res.status(200).json({ message: "Already fulfilled.", bookId: alreadyExists._id });
     }
 
-    res.json({ message: "Marked as fulfilled." });
+    const newRequest = new FulfilledRequest({ email, title, author, edition, notes, downloadUrl, price, paid });
+    const saved = await newRequest.save();
+    console.log("✅ Fulfilled request saved:", email, title);
+    res.status(201).json({ message: "Marked as fulfilled.", bookId: saved._id });
   } catch (err) {
     console.error("❌ Error saving fulfilled request:", err.message);
     res.status(500).json({ error: "Server error" });
@@ -225,7 +216,6 @@ app.get("/api/fulfilled-requests", async (req, res) => {
   }
 });
 
-// ✅ Admin route - get all payments
 app.get("/api/payments", async (req, res) => {
   try {
     const payments = await Payment.find().sort({ paidAt: -1 });
@@ -236,7 +226,6 @@ app.get("/api/payments", async (req, res) => {
   }
 });
 
-// ✅ Secure Download Route
 app.get("/api/download/:bookId", async (req, res) => {
   try {
     const { bookId } = req.params;
@@ -246,10 +235,7 @@ app.get("/api/download/:bookId", async (req, res) => {
       return res.status(400).json({ error: "Missing email or bookId" });
     }
 
-    // Check if the user paid for this book
     const payment = await Payment.findOne({ email: email.toLowerCase(), bookId, status: "paid" });
-
-    // OR if they uploaded it themselves
     const uploaded = await FulfilledRequest.findOne({ _id: bookId, email });
 
     if (!payment && !uploaded) {
@@ -261,7 +247,6 @@ app.get("/api/download/:bookId", async (req, res) => {
       return res.status(404).json({ error: "Download not available" });
     }
 
-    // ✅ Redirect to actual download URL (e.g. Cloud storage)
     return res.redirect(book.downloadUrl);
   } catch (err) {
     console.error("❌ Error in secure download route:", err.message);
@@ -269,30 +254,12 @@ app.get("/api/download/:bookId", async (req, res) => {
   }
 });
 
-// ✅ Global error handler
-app.use((err, req, res, next) => {
-  console.error("❌ Global error:", err.message);
-  if (err.message.includes("CORS")) {
-    res.status(403).send("Blocked by CORS");
-  } else {
-    res.status(500).send("Server Error: " + err.message);
-  }
-});
-
-// ✅ Start server
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-});
-// ✅ Admin route - merged payment + book info
 app.get("/api/admin/paid-details", async (req, res) => {
   try {
     const payments = await Payment.find({ status: "paid" });
     const bookIds = payments.map((p) => p.bookId);
 
-    const fulfilledBooks = await FulfilledRequest.find({
-      _id: { $in: bookIds },
-    });
+    const fulfilledBooks = await FulfilledRequest.find({ _id: { $in: bookIds } });
 
     const merged = payments.map((p) => {
       const book = fulfilledBooks.find((b) => b._id.toString() === p.bookId);
@@ -314,7 +281,6 @@ app.get("/api/admin/paid-details", async (req, res) => {
   }
 });
 
-// ✅ Mark payment as fulfilled (sets 'paid' = true on FulfilledRequest)
 app.post("/api/fulfill-payment", async (req, res) => {
   try {
     const { paymentId, bookId } = req.body;
@@ -322,15 +288,25 @@ app.post("/api/fulfill-payment", async (req, res) => {
       return res.status(400).json({ error: "Missing paymentId or bookId" });
     }
 
-    await FulfilledRequest.updateOne(
-      { _id: bookId },
-      { $set: { paid: true } }
-    );
-
+    await FulfilledRequest.updateOne({ _id: bookId }, { $set: { paid: true } });
     console.log("✅ Marked book as fulfilled:", bookId);
     res.json({ message: "Fulfilled successfully." });
   } catch (err) {
     console.error("❌ Fulfill error:", err.message);
     res.status(500).json({ error: "Server error" });
   }
+});
+
+app.use((err, req, res, next) => {
+  console.error("❌ Global error:", err.message);
+  if (err.message.includes("CORS")) {
+    res.status(403).send("Blocked by CORS");
+  } else {
+    res.status(500).send("Server Error: " + err.message);
+  }
+});
+
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
 });
