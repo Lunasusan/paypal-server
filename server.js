@@ -5,6 +5,7 @@ const mongoose = require("mongoose");
 const axios = require("axios");
 const multer = require("multer");
 const path = require("path");
+const qs = require("querystring");
 require("dotenv").config();
 
 const BookRequest = require("./models/BookRequest");
@@ -14,6 +15,7 @@ const User = require("./models/User");
 
 const app = express();
 
+// Allowed frontend origins
 const allowedOrigins = [
   "http://localhost:5173",
   "https://medical-textbooks.netlify.app",
@@ -38,10 +40,10 @@ app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
 app.use(bodyParser.json());
 
-// Serve static uploads folder
+// Static upload path
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
-// Multer setup for file uploads
+// Multer setup
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
     cb(null, "uploads/");
@@ -53,15 +55,18 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
+// MongoDB connection
 mongoose
   .connect(process.env.MONGO_URI)
   .then(() => console.log("✅ Connected to MongoDB Atlas"))
   .catch((err) => console.error("❌ MongoDB connection error:", err.message));
 
+// Root endpoint
 app.get("/", (req, res) => {
   res.send("📚 Medical Ebooks API is live.");
 });
 
+// Get public IP (optional utility)
 app.get("/api/my-ip", async (req, res) => {
   try {
     const response = await axios.get("https://api.ipify.org?format=json");
@@ -72,6 +77,7 @@ app.get("/api/my-ip", async (req, res) => {
   }
 });
 
+// Save user
 app.post("/api/users", async (req, res) => {
   try {
     const { email, uid } = req.body;
@@ -92,6 +98,22 @@ app.post("/api/users", async (req, res) => {
   }
 });
 
+// ✅ PAYPAL WEBHOOK with ORDER FETCHING
+async function getPayPalAccessToken() {
+  const auth = Buffer.from(`${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET}`).toString("base64");
+  const response = await axios.post(
+    "https://api-m.paypal.com/v1/oauth2/token",
+    qs.stringify({ grant_type: "client_credentials" }),
+    {
+      headers: {
+        Authorization: `Basic ${auth}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+    }
+  );
+  return response.data.access_token;
+}
+
 app.post("/paypal/webhook", async (req, res) => {
   try {
     const event = req.body;
@@ -99,31 +121,45 @@ app.post("/paypal/webhook", async (req, res) => {
 
     if (event.event_type === "PAYMENT.CAPTURE.COMPLETED") {
       const payerEmail = event?.resource?.payer?.email_address;
-      const referenceId = event?.resource?.invoice_id || event?.resource?.supplementary_data?.related_ids?.order_id;
+      const orderId = event?.resource?.supplementary_data?.related_ids?.order_id;
 
-      if (!payerEmail || !referenceId) {
-        console.warn("❌ Missing payerEmail or referenceId in webhook");
+      if (!payerEmail || !orderId) {
+        console.warn("❌ Missing payerEmail or orderId in webhook");
+        return res.sendStatus(400);
+      }
+
+      // Fetch full order to get reference_id
+      const accessToken = await getPayPalAccessToken();
+      const orderRes = await axios.get(`https://api-m.paypal.com/v2/checkout/orders/${orderId}`, {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      });
+
+      const bookId = orderRes?.data?.purchase_units?.[0]?.reference_id;
+      if (!bookId) {
+        console.warn("❌ Missing reference_id (bookId)");
         return res.sendStatus(400);
       }
 
       const existingPayment = await Payment.findOne({
         email: payerEmail.toLowerCase(),
-        bookId: referenceId,
+        bookId,
       });
 
       if (existingPayment) {
-        console.log("ℹ️ Payment already exists:", payerEmail, referenceId);
+        console.log("ℹ️ Payment already exists:", payerEmail, bookId);
         return res.sendStatus(200);
       }
 
       await Payment.create({
         email: payerEmail.toLowerCase(),
-        bookId: referenceId,
+        bookId,
         paidAt: new Date(),
         status: "paid",
       });
 
-      console.log("✅ Payment saved:", payerEmail, referenceId);
+      console.log("✅ Payment saved:", payerEmail, bookId);
       return res.sendStatus(200);
     }
 
@@ -135,6 +171,7 @@ app.post("/paypal/webhook", async (req, res) => {
   }
 });
 
+// Other API routes
 app.get("/api/has-paid", async (req, res) => {
   try {
     const { email, bookId } = req.query;
@@ -161,7 +198,6 @@ app.get("/api/paid-requests", async (req, res) => {
   }
 });
 
-// ✅ UPDATED: Accept book requests with image upload
 app.post("/api/book-request", upload.single("image"), async (req, res) => {
   try {
     const { title, author, edition, email, notes } = req.body;
@@ -258,7 +294,6 @@ app.get("/api/admin/paid-details", async (req, res) => {
   try {
     const payments = await Payment.find({ status: "paid" });
     const bookIds = payments.map((p) => p.bookId);
-
     const fulfilledBooks = await FulfilledRequest.find({ _id: { $in: bookIds } });
 
     const merged = payments.map((p) => {
@@ -297,6 +332,7 @@ app.post("/api/fulfill-payment", async (req, res) => {
   }
 });
 
+// Global error handler
 app.use((err, req, res, next) => {
   console.error("❌ Global error:", err.message);
   if (err.message.includes("CORS")) {
@@ -306,6 +342,7 @@ app.use((err, req, res, next) => {
   }
 });
 
+// Start server
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
