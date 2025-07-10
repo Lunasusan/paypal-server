@@ -33,11 +33,9 @@ const corsOptions = {
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: ["Origin", "X-Requested-With", "Content-Type", "Accept"],
   credentials: true,
-  optionsSuccessStatus: 200,
 };
 
 app.use(cors(corsOptions));
-app.options("*", cors(corsOptions));
 app.use(bodyParser.json());
 
 // Static upload path
@@ -66,7 +64,7 @@ app.get("/", (req, res) => {
   res.send("📚 Medical Ebooks API is live.");
 });
 
-// Get public IP (optional utility)
+// Utility: Get public IP
 app.get("/api/my-ip", async (req, res) => {
   try {
     const response = await axios.get("https://api.ipify.org?format=json");
@@ -98,7 +96,7 @@ app.post("/api/users", async (req, res) => {
   }
 });
 
-// ✅ PAYPAL WEBHOOK with ORDER FETCHING
+// ✅ PayPal Webhook
 async function getPayPalAccessToken() {
   const auth = Buffer.from(`${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET}`).toString("base64");
   const response = await axios.post(
@@ -128,7 +126,6 @@ app.post("/paypal/webhook", async (req, res) => {
         return res.sendStatus(400);
       }
 
-      // Fetch full order to get reference_id
       const accessToken = await getPayPalAccessToken();
       const orderRes = await axios.get(`https://api-m.paypal.com/v2/checkout/orders/${orderId}`, {
         headers: {
