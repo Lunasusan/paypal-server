@@ -12,6 +12,7 @@ const BookRequest = require("./models/BookRequest");
 const FulfilledRequest = require("./models/FulfilledRequest");
 const Payment = require("./models/Payment");
 const User = require("./models/User");
+const FreeBook = require("./models/FreeBook"); // ✅ NEW
 
 const app = express();
 
@@ -37,8 +38,6 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 app.use(bodyParser.json());
-
-// Static upload path
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 // Multer setup
@@ -53,18 +52,18 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-// MongoDB connection
+// MongoDB
 mongoose
   .connect(process.env.MONGO_URI)
   .then(() => console.log("✅ Connected to MongoDB Atlas"))
   .catch((err) => console.error("❌ MongoDB connection error:", err.message));
 
-// Root endpoint
+// Root
 app.get("/", (req, res) => {
   res.send("📚 Medical Ebooks API is live.");
 });
 
-// Utility: Get public IP
+// GET IP
 app.get("/api/my-ip", async (req, res) => {
   try {
     const response = await axios.get("https://api.ipify.org?format=json");
@@ -85,8 +84,6 @@ app.post("/api/users", async (req, res) => {
     if (!existingUser) {
       await User.create({ email, uid });
       console.log("✅ New user saved:", email);
-    } else {
-      console.log("ℹ️ User already exists:", email);
     }
 
     res.status(200).json({ success: true });
@@ -96,7 +93,7 @@ app.post("/api/users", async (req, res) => {
   }
 });
 
-// ✅ PayPal Webhook
+// PayPal Webhook
 async function getPayPalAccessToken() {
   const auth = Buffer.from(`${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET}`).toString("base64");
   const response = await axios.post(
@@ -115,39 +112,22 @@ async function getPayPalAccessToken() {
 app.post("/paypal/webhook", async (req, res) => {
   try {
     const event = req.body;
-    console.log("📩 PayPal webhook received:", event.event_type);
-
     if (event.event_type === "PAYMENT.CAPTURE.COMPLETED") {
       const payerEmail = event?.resource?.payer?.email_address;
       const orderId = event?.resource?.supplementary_data?.related_ids?.order_id;
 
-      if (!payerEmail || !orderId) {
-        console.warn("❌ Missing payerEmail or orderId in webhook");
-        return res.sendStatus(400);
-      }
+      if (!payerEmail || !orderId) return res.sendStatus(400);
 
       const accessToken = await getPayPalAccessToken();
       const orderRes = await axios.get(`https://api-m.paypal.com/v2/checkout/orders/${orderId}`, {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
+        headers: { Authorization: `Bearer ${accessToken}` },
       });
 
       const bookId = orderRes?.data?.purchase_units?.[0]?.reference_id;
-      if (!bookId) {
-        console.warn("❌ Missing reference_id (bookId)");
-        return res.sendStatus(400);
-      }
+      if (!bookId) return res.sendStatus(400);
 
-      const existingPayment = await Payment.findOne({
-        email: payerEmail.toLowerCase(),
-        bookId,
-      });
-
-      if (existingPayment) {
-        console.log("ℹ️ Payment already exists:", payerEmail, bookId);
-        return res.sendStatus(200);
-      }
+      const existingPayment = await Payment.findOne({ email: payerEmail.toLowerCase(), bookId });
+      if (existingPayment) return res.sendStatus(200);
 
       await Payment.create({
         email: payerEmail.toLowerCase(),
@@ -156,45 +136,39 @@ app.post("/paypal/webhook", async (req, res) => {
         status: "paid",
       });
 
-      console.log("✅ Payment saved:", payerEmail, bookId);
       return res.sendStatus(200);
     }
 
-    console.log("ℹ️ Ignored webhook event:", event.event_type);
     res.sendStatus(200);
   } catch (err) {
-    console.error("❌ Error in PayPal webhook:", err.message);
+    console.error("❌ PayPal webhook error:", err.message);
     res.sendStatus(500);
   }
 });
 
-// Other API routes
+// Paid check
 app.get("/api/has-paid", async (req, res) => {
   try {
     const { email, bookId } = req.query;
-    if (!email || !bookId) return res.status(400).json({ error: "Missing fields" });
-
     const found = await Payment.findOne({ email: email.toLowerCase(), bookId, status: "paid" });
     res.json({ paid: !!found });
   } catch (err) {
-    console.error("❌ Error checking payment:", err.message);
     res.status(500).json({ error: "Server error" });
   }
 });
 
+// Paid requests
 app.get("/api/paid-requests", async (req, res) => {
   try {
     const { email } = req.query;
-    if (!email) return res.status(400).json({ error: "Missing email" });
-
     const payments = await Payment.find({ email: email.toLowerCase(), status: "paid" });
     res.json(payments);
   } catch (err) {
-    console.error("❌ Failed to fetch paid books:", err.message);
     res.status(500).json({ error: "Server error" });
   }
 });
 
+// Book request
 app.post("/api/book-request", upload.single("image"), async (req, res) => {
   try {
     const { title, author, edition, email, notes } = req.body;
@@ -202,91 +176,69 @@ app.post("/api/book-request", upload.single("image"), async (req, res) => {
 
     const request = new BookRequest({ title, author, edition, email, notes, image: imagePath });
     await request.save();
-    console.log("📥 Book Requested:", request);
     res.status(201).json({ message: "Request saved successfully." });
   } catch (err) {
-    console.error("❌ book-request error:", err.message);
     res.status(500).json({ error: "Server error" });
   }
 });
 
+// Get book requests
 app.get("/api/book-requests", async (req, res) => {
   try {
     const requests = await BookRequest.find().sort({ createdAt: -1 });
     res.json(requests);
   } catch (err) {
-    console.error("❌ Failed to return book requests:", err.message);
     res.status(500).json({ error: "Server error" });
   }
 });
 
+// Fulfill request
 app.post("/api/fulfill-request", async (req, res) => {
   try {
     const { email, title, author, edition, notes, downloadUrl, price, paid } = req.body;
 
     const alreadyExists = await FulfilledRequest.findOne({ email, title });
-    if (alreadyExists) {
-      return res.status(200).json({ message: "Already fulfilled.", bookId: alreadyExists._id });
-    }
+    if (alreadyExists) return res.status(200).json({ message: "Already fulfilled.", bookId: alreadyExists._id });
 
     const newRequest = new FulfilledRequest({ email, title, author, edition, notes, downloadUrl, price, paid });
     const saved = await newRequest.save();
-    console.log("✅ Fulfilled request saved:", email, title);
     res.status(201).json({ message: "Marked as fulfilled.", bookId: saved._id });
   } catch (err) {
-    console.error("❌ Error saving fulfilled request:", err.message);
     res.status(500).json({ error: "Server error" });
   }
 });
 
+// Get fulfilled requests
 app.get("/api/fulfilled-requests", async (req, res) => {
   try {
     const fulfilled = await FulfilledRequest.find().sort({ createdAt: -1 });
     res.json(fulfilled);
   } catch (err) {
-    console.error("❌ Error fetching fulfilled requests:", err.message);
     res.status(500).json({ error: "Server error" });
   }
 });
 
-app.get("/api/payments", async (req, res) => {
-  try {
-    const payments = await Payment.find().sort({ paidAt: -1 });
-    res.json(payments);
-  } catch (err) {
-    console.error("❌ Failed to fetch payments:", err.message);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
+// Secure download route
 app.get("/api/download/:bookId", async (req, res) => {
   try {
     const { bookId } = req.params;
     const { email } = req.query;
 
-    if (!email || !bookId) {
-      return res.status(400).json({ error: "Missing email or bookId" });
-    }
-
     const payment = await Payment.findOne({ email: email.toLowerCase(), bookId, status: "paid" });
     const uploaded = await FulfilledRequest.findOne({ _id: bookId, email });
 
-    if (!payment && !uploaded) {
-      return res.status(403).json({ error: "Access denied. No valid payment or ownership." });
-    }
+    if (!payment && !uploaded) return res.status(403).json({ error: "Access denied." });
 
     const book = await FulfilledRequest.findById(bookId);
-    if (!book || !book.downloadUrl) {
-      return res.status(404).json({ error: "Download not available" });
-    }
+    if (!book?.downloadUrl) return res.status(404).json({ error: "Download not available" });
 
     return res.redirect(book.downloadUrl);
   } catch (err) {
-    console.error("❌ Error in secure download route:", err.message);
     res.status(500).json({ error: "Server error" });
   }
 });
 
+// Admin paid details
 app.get("/api/admin/paid-details", async (req, res) => {
   try {
     const payments = await Payment.find({ status: "paid" });
@@ -308,23 +260,38 @@ app.get("/api/admin/paid-details", async (req, res) => {
 
     res.json(merged);
   } catch (err) {
-    console.error("❌ Failed to merge paid data:", err.message);
     res.status(500).json({ error: "Server error" });
   }
 });
 
+// ✅ FREE BOOK UPLOAD (only you use this)
+app.post("/api/free-books/upload", async (req, res) => {
+  try {
+    const { title, author, downloadUrl, notes } = req.body;
+    const saved = await FreeBook.create({ title, author, downloadUrl, notes });
+    res.status(201).json({ message: "Free book uploaded.", book: saved });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to upload free book." });
+  }
+});
+
+// ✅ GET FREE BOOKS
+app.get("/api/free-books", async (req, res) => {
+  try {
+    const books = await FreeBook.find().sort({ createdAt: -1 });
+    res.json(books);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch free books." });
+  }
+});
+
+// Fulfill payment
 app.post("/api/fulfill-payment", async (req, res) => {
   try {
     const { paymentId, bookId } = req.body;
-    if (!paymentId || !bookId) {
-      return res.status(400).json({ error: "Missing paymentId or bookId" });
-    }
-
     await FulfilledRequest.updateOne({ _id: bookId }, { $set: { paid: true } });
-    console.log("✅ Marked book as fulfilled:", bookId);
     res.json({ message: "Fulfilled successfully." });
   } catch (err) {
-    console.error("❌ Fulfill error:", err.message);
     res.status(500).json({ error: "Server error" });
   }
 });
